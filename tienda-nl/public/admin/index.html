@@ -2,88 +2,189 @@
 <html lang="es" data-theme="dark"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta name="robots" content="noindex,nofollow">
+<meta name="theme-color" content="#08090a">
 <title>Prestige Auto · Gestión</title>
 <link rel="stylesheet" href="/styles.css">
+<script>try{var t=localStorage.getItem('pa_theme');if(t)document.documentElement.setAttribute('data-theme',t)}catch(e){}</script>
 </head><body>
 <div id="app"></div><div id="toast"></div>
-<input type="file" id="fx" accept=".xlsx,.xls,.csv" style="display:none">
-<script src="/vendor/xlsx.full.min.js"></script>
+<input type="file" id="fx" accept=".xlsx,.xls,.csv" class="hide">
+<input type="file" id="fimg" accept="image/*" class="hide">
 <script src="/admin/sap.js"></script>
 <script>
 const $=s=>document.querySelector(s);
 const esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
-const money=n=>new Intl.NumberFormat('es-AR',{style:'currency',currency:'ARS',maximumFractionDigits:0}).format(n||0);
-const S={auth:null,tab:'pedidos',orders:[],products:[],filter:'nuevo',sel:{},open:null,q:'',msg:'',err:'',code:'',lmsg:'',del:null};
+const nf0=new Intl.NumberFormat('es-AR',{maximumFractionDigits:0}),nf2=new Intl.NumberFormat('es-AR',{maximumFractionDigits:2});
+const nfd=new Intl.NumberFormat('es-AR',{minimumFractionDigits:2,maximumFractionDigits:2});
+const fmt=n=>Number.isInteger(n||0)?nf0.format(n||0):nfd.format(n);
+const money=(n,c)=>(c==='USD'?'US$ ':'$ ')+fmt(n||0);
+const both=(a,u)=>[a?money(a,'ARS'):'',u?money(u,'USD'):''].filter(Boolean).join(' + ')||money(0,'ARS');
+const fecha=ts=>new Date(Number(ts)).toLocaleString('es-AR',{day:'2-digit',month:'2-digit',year:'2-digit',hour:'2-digit',minute:'2-digit'});
+const imgUrl=(u,t)=>!u?'':u.startsWith('img:')?'/api/img/'+u.slice(4)+(t?'t':''):/^(https?:)?\/\//.test(u)||u.startsWith('/')?u:'/img/'+u;
+const A={auth:null,tab:'resumen',stats:null,orders:[],of:'nuevo',oq:'',sel:{},open:null,products:[],pq:'',edit:null,isNew:false,delArm:false,set:null,lmsg:'',err:'',busy:false};
 function toast(m){$('#toast').innerHTML='<div class="toast">'+esc(m)+'</div>';setTimeout(()=>$('#toast').innerHTML='',2800)}
-async function api(path,opt){const r=await fetch(path,{credentials:'same-origin',...opt,headers:{'Content-Type':'application/json'}});let d={};try{d=await r.json()}catch(e){}if(r.status===401&&path!=='/api/admin/login'){S.auth=false;render()}return {ok:r.ok,status:r.status,d}}
-const dl=(name,data)=>{const a=document.createElement('a');a.href=URL.createObjectURL(new Blob([data]));a.download=name;a.click()};
-const fecha=ts=>new Date(ts).toLocaleString('es-AR');
+async function api(path,opt){const r=await fetch(path,{credentials:'same-origin',...opt,headers:{'Content-Type':'application/json'}});let d={};try{d=await r.json()}catch(e){}if(r.status===401&&path!=='/api/admin/login'){A.auth=false;render()}return {ok:r.ok,status:r.status,d}}
+const post=(p,b)=>api(p,{method:'POST',body:JSON.stringify(b)});
+let xlsxP=null;const loadXLSX=()=>xlsxP||(xlsxP=new Promise((res,rej)=>{if(window.XLSX)return res();const s=document.createElement('script');s.src='/vendor/xlsx.full.min.js';s.onload=res;s.onerror=()=>{xlsxP=null;rej()};document.head.appendChild(s)}));
+const dl=(name,data)=>{const a=document.createElement('a');a.href=URL.createObjectURL(new Blob([data]));a.download=name;document.body.appendChild(a);a.click();a.remove()};
+const today=()=>new Date().toISOString().slice(0,10);
+
+/* ---------- imágenes: se achican en el navegador y se guardan en la base ---------- */
+const b64=blob=>new Promise(r=>{const f=new FileReader();f.onload=()=>r(String(f.result).split(',')[1]);f.readAsDataURL(blob)});
+async function enc(bmp,max,q){const k=Math.min(1,max/Math.max(bmp.width,bmp.height));const c=document.createElement('canvas');c.width=Math.max(1,Math.round(bmp.width*k));c.height=Math.max(1,Math.round(bmp.height*k));
+ c.getContext('2d').drawImage(bmp,0,0,c.width,c.height);let blob=await new Promise(r=>c.toBlob(r,'image/webp',q));if(!blob||blob.type!=='image/webp')blob=await new Promise(r=>c.toBlob(r,'image/jpeg',q));return b64(blob)}
+async function uploadImage(file,max){const bmp=await createImageBitmap(file);const [full,thumb]=await Promise.all([enc(bmp,max,.82),enc(bmp,480,.78)]);
+ const r=await post('/api/admin/image',{full:{data:full},thumb:{data:thumb}});if(!r.ok)throw new Error(r.d.error||'Error');return 'img:'+r.d.id}
+let pickCb=null;const pickImage=(max,cb)=>{pickCb={max,cb};$('#fimg').click()};
 
 /* ---------- Excel ---------- */
-function wbPedidos(orders){const rows=[COLUMNAS.map(c=>c[0])];orders.forEach(o=>o.items.forEach(i=>rows.push(COLUMNAS.map(c=>c[1](o,i)))));
- const ws=XLSX.utils.aoa_to_sheet(rows);ws['!cols']=COLUMNAS.map(c=>({wch:Math.max(12,c[0].length+4)}));const wb=XLSX.utils.book_new();XLSX.utils.book_append_sheet(wb,ws,'Pedidos');return XLSX.write(wb,{bookType:'xlsx',type:'array'})}
-function wbBackup(orders){const rows=[['Pedido','Fecha','Estado','Nombre','Legajo','DNI','Mail','Teléfono','Material','Producto','Cantidad','Precio unit.','Total pedido']];
- orders.forEach(o=>o.items.forEach(i=>rows.push([o.number,fecha(o.created_at),o.status,o.name,String(o.legajo),String(o.dni),o.email,String(o.phone),i.sku,i.name,i.qty,i.price,o.total])));
- const wb=XLSX.utils.book_new();XLSX.utils.book_append_sheet(wb,XLSX.utils.aoa_to_sheet(rows),'Respaldo');return XLSX.write(wb,{bookType:'xlsx',type:'array'})}
-function plantilla(){const rows=[['Código SAP','Nombre','Categoría','Descripción','Precio','Imagen','Activo'],['Q99542025003010001','Remera polo corporativa','Indumentaria','Algodón peinado, logo bordado.',38000,'remera-polo.jpg','SI']];
- const ws=XLSX.utils.aoa_to_sheet(rows);ws['!cols']=[22,30,16,40,12,22,8].map(w=>({wch:w}));const wb=XLSX.utils.book_new();XLSX.utils.book_append_sheet(wb,ws,'Productos');dl('plantilla_productos.xlsx',XLSX.write(wb,{bookType:'xlsx',type:'array'}))}
+function wbFrom(rows,name,cols){const ws=XLSX.utils.aoa_to_sheet(rows);ws['!cols']=cols.map(w=>({wch:w}));const wb=XLSX.utils.book_new();XLSX.utils.book_append_sheet(wb,ws,name);return XLSX.write(wb,{bookType:'xlsx',type:'array'})}
+async function exportSAP(orders){await loadXLSX();const rows=[COLUMNAS.map(c=>c[0])];orders.forEach(o=>o.items.forEach(i=>rows.push(COLUMNAS.map(c=>c[1](o,i)))));
+ dl('pedidos_prestige_'+today()+'.xlsx',wbFrom(rows,'Pedidos',COLUMNAS.map(c=>Math.max(12,c[0].length+4))));
+ const nuevos=orders.filter(o=>o.status==='nuevo').map(o=>o.number);if(nuevos.length)await post('/api/admin/status',{numbers:nuevos,status:'exportado'});return nuevos.length}
+async function exportBackup(){await loadXLSX();const r=await api('/api/admin/orders?status=todos');if(!r.ok)return toast('No se pudo generar');
+ const rows=[['Pedido','Fecha','Estado','Nombre','Legajo','DNI','Mail','Teléfono','Material','Producto','Cantidad','Precio unit.','Moneda','Versión TyC']];
+ r.d.orders.forEach(o=>o.items.forEach(i=>rows.push([o.number,fecha(o.created_at),o.status,o.name,String(o.legajo),String(o.dni),o.email,String(o.phone),i.sku,i.name,i.qty,i.price,i.currency||'ARS',o.terms_version||''])));
+ dl('respaldo_pedidos_'+today()+'.xlsx',wbFrom(rows,'Respaldo',[18,16,11,24,9,11,28,13,20,34,9,12,8,10]));toast('Respaldo descargado')}
+async function plantilla(){await loadXLSX();dl('plantilla_productos.xlsx',wbFrom([['Código SAP','Nombre','Categoría','Descripción','Precio','Moneda','Imagen','Activo'],['Q99542025003010001','Remera polo corporativa','Indumentaria','Algodón peinado, logo bordado.',38000,'ARS','','SI']],'Productos',[22,30,16,40,12,9,22,8]))}
 const norm=s=>String(s).toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g,'').replace(/[^a-z0-9]/g,'');
-const MAP={sku:['codigosap','codigo','material','sku','codigodematerial'],name:['nombre','producto','name','descripcioncorta'],category:['categoria','linea','lineadeproducto','category'],description:['descripcion','detalle','description'],price:['precio','price','importe'],image:['imagen','foto','image'],active:['activo','visible','active']};
+const MAP={sku:['codigosap','codigo','material','sku','codigodematerial'],name:['nombre','producto','name'],category:['categoria','linea','lineadeproducto','category'],description:['descripcion','detalle','description'],price:['precio','price','importe'],currency:['moneda','currency','divisa'],image:['imagen','foto','image'],active:['activo','visible','active']};
+function num(v){if(typeof v==='number')return v;let s=String(v).replace(/[^\d.,-]/g,'');if(/^\d{1,3}(\.\d{3})+$/.test(s))s=s.replace(/\./g,'');else if(s.includes(','))s=s.replace(/\./g,'').replace(',','.');return Number(s)}
 function parseRows(json){return json.map(r=>{const o={};for(const [k,alts] of Object.entries(MAP)){const key=Object.keys(r).find(c=>alts.includes(norm(c)));o[k]=key?r[key]:''}
- o.price=typeof o.price==='number'?o.price:Number(String(o.price).replace(/[$\s]/g,'').replace(/\./g,'').replace(',','.'));
+ o.price=num(o.price);const m=String(o.currency).toUpperCase().replace(/[^A-Z]/g,'');o.currency=m==='USD'||m==='U'||m==='DOLAR'||m==='DOLARES'?'USD':m==='ARS'||m==='PESOS'||m==='PESO'?'ARS':m;
  const a=norm(o.active);o.active=!(a==='no'||a==='0'||a==='false'||a==='n');return o}).filter(r=>String(r.sku).trim()||String(r.name).trim())}
+async function importExcel(file){A.err='';try{await loadXLSX();const wb=XLSX.read(await file.arrayBuffer(),{type:'array'});const json=XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]],{defval:'',raw:true});
+ const rows=parseRows(json);if(!rows.length){A.err='El archivo no tiene productos.';return render()}
+ const r=await post('/api/admin/products',{rows});if(r.ok){toast(r.d.count+' productos cargados');await loadProducts()}else{A.err=r.d.error||'No se pudo importar';render()}}catch(x){A.err='No se pudo leer el archivo.';render()}}
 
 /* ---------- vistas ---------- */
-const loginHTML=()=>`<div class="login"><span class="wm"><b>Prestige</b> · Gestión</span><div class="panel"><h3>Acceso administrador</h3><div class="fld"><label>Contraseña</label><input id="pw" type="password"></div>${S.lmsg?`<div class="err">${esc(S.lmsg)}</div>`:''}<div class="acts"><span></span><button class="btn" data-act="login">Ingresar</button></div></div></div>`;
-function ordHTML(){const sh=S.orders;const ks=Object.keys(S.sel).filter(k=>S.sel[k]);
- return `<div style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:14px;align-items:center"><h3 style="margin:0;flex:1">${sh.length} pedidos · ${ks.length} seleccionados</h3>
- <select data-act="filter" style="width:auto">${['nuevo','exportado','cancelado','todos'].map(s=>`<option ${S.filter===s?'selected':''}>${s}</option>`).join('')}</select>
- <button class="btn ghost sm" data-act="selall">Seleccionar todos</button><button class="btn sm" data-act="xsap" ${ks.length?'':'disabled'}>Excel para SAP</button></div>
- <div class="testbar">Al descargar el Excel para SAP, los pedidos pasan a «exportado». <button class="btn ghost sm" data-act="backup">Respaldo de todos los pedidos</button></div>
- <div class="tw"><table><thead><tr><th></th><th>Pedido</th><th>Fecha</th><th>Empleado</th><th>Ítems</th><th>Total</th><th>Estado</th></tr></thead><tbody>
- ${sh.map(o=>`<tr><td><input type="checkbox" data-act="osel" data-id="${o.number}" ${S.sel[o.number]?'checked':''}></td><td><a href="#" data-act="oopen" data-id="${o.number}" style="color:var(--accent)">${esc(o.number)}</a></td><td>${fecha(o.created_at)}</td><td>${esc(o.name)}<br><span class="sku">Legajo ${esc(o.legajo)}</span></td><td>${o.items.length}</td><td>${money(o.total)}</td>
- <td><select data-act="status" data-id="${o.number}" style="width:auto">${['nuevo','exportado','cancelado'].map(s=>`<option ${o.status===s?'selected':''}>${s}</option>`).join('')}</select></td></tr>
- ${S.open===o.number?`<tr><td></td><td colspan="6" style="background:var(--surface2)">DNI ${esc(o.dni)} · ${esc(o.email)} · Tel ${esc(o.phone)}<br>${o.items.map(i=>`${esc(i.sku)} — ${esc(i.name)} × ${i.qty} (${money(i.price)})`).join('<br>')}</td></tr>`:''}`).join('')||'<tr><td colspan="7" class="empty">No hay pedidos con este estado.</td></tr>'}</tbody></table></div>`}
-function prodHTML(){const q=S.q.toLowerCase();const l=S.products.filter(p=>!q||(p.name+p.sku+(p.category||'')).toLowerCase().includes(q));
- return `<div class="testbar"><b>Cargar catálogo:</b> descargá la plantilla, completala en Excel y subila. Los productos se crean o actualizan por Código SAP.<button class="btn ghost sm" data-act="plantilla">Descargar plantilla</button><button class="btn sm" data-act="pickx">Subir Excel</button></div>
- ${S.err?`<div class="err" style="margin-bottom:10px">${esc(S.err)}</div>`:''}${S.msg?`<div class="note">${esc(S.msg)}</div>`:''}
- <div style="display:flex;gap:10px;margin-bottom:12px;align-items:center"><h3 style="margin:0;flex:1">${S.products.length} productos</h3><input id="pq" type="search" placeholder="Buscar" value="${esc(S.q)}" style="max-width:240px"></div>
- <div class="tw"><table><thead><tr><th>Código SAP</th><th>Nombre</th><th>Categoría</th><th>Precio</th><th>Imagen</th><th>Estado</th><th></th></tr></thead><tbody>${l.map(p=>`<tr><td>${esc(p.sku)}</td><td>${esc(p.name)}</td><td>${esc(p.category)}</td><td>${money(p.price)}</td><td>${esc(p.image)}</td><td><span class="tag ${p.active?'ok':''}">${p.active?'Visible':'Oculto'}</span></td><td><button class="btn danger sm" data-act="pdel" data-id="${esc(p.sku)}">${S.del===p.sku?'¿Confirmar?':'Eliminar'}</button></td></tr>`).join('')||'<tr><td colspan="7" class="empty">Todavía no hay productos. Subí tu Excel.</td></tr>'}</tbody></table></div>
- <p class="sku" style="margin-top:12px">Las fotos se copian a la carpeta <code>public/img</code> del proyecto y en la columna «Imagen» va el nombre del archivo (o un link completo).</p>`}
-const accHTML=()=>`<div class="panel"><h3>Clave de acceso de los empleados</h3><div class="note">Los empleados entran a la tienda con esta clave. Al cambiarla se cierran todas las sesiones abiertas y hay que compartir la nueva por mail interno.</div><div class="fld"><label>Clave actual</label><input type="text" id="acode" value="${esc(S.code)}"></div>${S.err?`<div class="err">${esc(S.err)}</div>`:''}${S.msg?`<div class="note">${esc(S.msg)}</div>`:''}<div class="acts"><span></span><button class="btn" data-act="savecode">Guardar nueva clave</button></div></div>`;
-function render(){
- if(S.auth===null){$('#app').innerHTML='<div class="wrap" style="padding-top:90px"><div class="sk"></div></div>';return}
- if(!S.auth){$('#app').innerHTML=loginHTML();return}
- const tabs=['pedidos','productos','acceso'].map(t=>`<button class="${S.tab===t?'on':''}" data-act="tab" data-id="${t}">${t}</button>`).join('');
- $('#app').innerHTML=`<header><div class="wrap hd"><span class="wm"><b>Prestige</b> · Gestión</span><div class="sp"></div><button class="ico" data-act="theme">◐</button><button class="ico" data-act="logout">Salir</button></div></header><main class="wrap"><h2>Administración</h2><div class="tabs">${tabs}</div>${S.tab==='pedidos'?ordHTML():S.tab==='productos'?prodHTML():accHTML()}</main>`}
+const ICON={resumen:'<path d="M3 11l9-8 9 8v9a1 1 0 0 1-1 1h-5v-6H9v6H4a1 1 0 0 1-1-1z"/>',pedidos:'<path d="M6 3h12v18l-3-2-3 2-3-2-3 2z"/><path d="M9 8h6M9 12h6"/>',productos:'<path d="M3 7l9-4 9 4v10l-9 4-9-4z"/><path d="M3 7l9 4 9-4M12 11v10"/>',contenido:'<rect x="3" y="4" width="18" height="16" rx="2"/><path d="M3 15l5-4 4 3 3-2 6 5"/>',ajustes:'<circle cx="12" cy="12" r="3"/><path d="M12 2v3M12 19v3M4.2 4.2l2.1 2.1M17.7 17.7l2.1 2.1M2 12h3M19 12h3M4.2 19.8l2.1-2.1M17.7 6.3l2.1-2.1"/>'};
+const TABS=[['resumen','Resumen'],['pedidos','Pedidos'],['productos','Productos'],['contenido','Contenido'],['ajustes','Ajustes']];
+const stTag=s=>`<span class="tag ${s==='exportado'?'ok':s==='cancelado'?'no':'new'}">${s}</span>`;
+const sw=(act,on,id)=>`<label class="sw"><input type="checkbox" data-act="${act}" ${id!==undefined?`data-id="${esc(id)}"`:''} ${on?'checked':''}><i></i></label>`;
 
-async function loadOrders(){const r=await api('/api/admin/orders?status='+S.filter);if(r.ok){S.orders=r.d.orders;S.auth=true;render()}else if(S.auth===null){S.auth=false;render()}}
-async function loadProducts(){const r=await api('/api/admin/products');if(r.ok){S.products=r.d.products}render()}
-async function loadCode(){const r=await api('/api/admin/settings');if(r.ok)S.code=r.d.access_code||'';render()}
-async function setStatus(nums,st){const r=await api('/api/admin/status',{method:'POST',body:JSON.stringify({numbers:nums,status:st})});return r.ok}
-document.addEventListener('click',async e=>{const t=e.target.closest('[data-act]');if(!t||t.tagName==='SELECT'||t.type==='checkbox')return;const a=t.dataset.act,id=t.dataset.id;if(a==='oopen')e.preventDefault();
- if(a==='login'){const r=await api('/api/admin/login',{method:'POST',body:JSON.stringify({password:$('#pw').value})});if(r.ok){S.lmsg='';await loadOrders()}else{S.lmsg=r.d.error||'Error';render()}}
- else if(a==='logout'){await api('/api/logout',{method:'POST'});S.auth=false;render()}
- else if(a==='theme')document.documentElement.dataset.theme=document.documentElement.dataset.theme==='dark'?'light':'dark';
- else if(a==='tab'){S.tab=id;S.err='';S.msg='';render();if(id==='pedidos')loadOrders();if(id==='productos')loadProducts();if(id==='acceso')loadCode()}
- else if(a==='selall'){S.sel={};S.orders.forEach(o=>S.sel[o.number]=true);render()}
- else if(a==='oopen'){S.open=S.open===id?null:id;render()}
- else if(a==='xsap'){const ks=Object.keys(S.sel).filter(k=>S.sel[k]);const os=S.orders.filter(o=>ks.includes(o.number));if(!os.length)return;
-  dl('pedidos_prestige_'+new Date().toISOString().slice(0,10)+'.xlsx',wbPedidos(os));const nuevos=os.filter(o=>o.status==='nuevo').map(o=>o.number);if(nuevos.length)await setStatus(nuevos,'exportado');S.sel={};toast('Excel generado');loadOrders()}
- else if(a==='backup'){const r=await api('/api/admin/orders?status=todos');if(r.ok)dl('respaldo_pedidos_'+new Date().toISOString().slice(0,10)+'.xlsx',wbBackup(r.d.orders))}
- else if(a==='plantilla')plantilla();
+function resumenHTML(){const s=A.stats;if(!s)return '<div class="sk"></div>';
+ const by=Object.fromEntries(s.byStatus.map(x=>[x.status,x]));const nuevo=by.nuevo||{c:0},act=s.byStatus.filter(x=>x.status!=='cancelado');
+ const tot=act.reduce((a,x)=>a+x.c,0),ars=act.reduce((a,x)=>a+x.ars,0),usd=act.reduce((a,x)=>a+x.usd,0);
+ const days=[];for(let i=13;i>=0;i--){const d=new Date(Date.now()-3*3600e3-i*864e5).toISOString().slice(0,10);days.push([d,(s.perDay.find(x=>x.d===d)||{c:0}).c])}
+ const mx=Math.max(1,...days.map(d=>d[1]));
+ return `<div class="kpis"><div class="kpi ${nuevo.c?'hot':''}"><div class="t">Para cargar en SAP</div><div class="v">${nuevo.c}</div></div><div class="kpi"><div class="t">Pedidos totales</div><div class="v">${tot}</div></div><div class="kpi"><div class="t">Unidades</div><div class="v">${s.units}</div></div><div class="kpi"><div class="t">Monto</div><div class="v" style="font-size:20px;padding-top:6px">${both(ars,usd)}</div></div></div>
+ <div class="panel cta"><div class="grow"><b>${nuevo.c} pedido${nuevo.c===1?'':'s'} nuevo${nuevo.c===1?'':'s'}</b><div class="muted sm">Se descargan en el formato de carga de SAP y pasan a «exportado».</div></div>
+ <button class="btn acc" data-act="exportnew" ${nuevo.c?'':'disabled'}>Descargar Excel SAP</button><button class="btn ghost" data-act="tab" data-id="pedidos">Ver pedidos</button></div>
+ <div class="cols"><div class="panel"><h3 class="sec">Pedidos por día · últimos 14 días</h3><div class="bars">${days.map(d=>`<div style="height:${Math.max(3,d[1]/mx*100)}%" title="${d[0]}: ${d[1]}">${d[1]?`<span>${d[1]}</span>`:''}</div>`).join('')}</div><div class="bars-l">${days.map(d=>`<span>${d[0].slice(8)}</span>`).join('')}</div></div>
+ <div class="panel"><h3 class="sec">Más pedidos</h3>${s.top.length?s.top.map((t,i)=>`<div class="row" style="padding:10px 0"><b class="muted" style="width:18px">${i+1}</b><div class="grow"><div style="font-size:14px">${esc(t.name)}</div><div class="sku">${esc(t.sku)}</div></div><b>${t.units}</b></div>`).join(''):'<div class="muted">Todavía no hay pedidos.</div>'}</div></div>`}
+
+function ordersFiltered(){const q=A.oq.toLowerCase();return A.orders.filter(o=>!q||(o.number+' '+o.name+' '+o.legajo+' '+o.dni+' '+o.email).toLowerCase().includes(q))}
+function pedidosHTML(){const l=ordersFiltered(),ks=Object.keys(A.sel).filter(k=>A.sel[k]);
+ return `<div class="toolbar"><div class="chips">${[['nuevo','Nuevos'],['exportado','Exportados'],['cancelado','Cancelados'],['todos','Todos']].map(([k,t])=>`<button class="chip ${A.of===k?'on':''}" data-act="of" data-id="${k}">${t}</button>`).join('')}</div></div>
+ <div class="toolbar"><input id="oq" type="search" placeholder="Buscar pedido o empleado" value="${esc(A.oq)}" style="flex:1;min-width:200px"><button class="btn ghost s" data-act="selall">${ks.length===l.length&&l.length?'Quitar selección':'Seleccionar todos'}</button></div>
+ <div class="list">${l.map(o=>{const d=A.open===o.number;return `<div class="item ${A.sel[o.number]?'sel':''}"><input type="checkbox" class="ck" data-act="osel" data-id="${o.number}" ${A.sel[o.number]?'checked':''} aria-label="Seleccionar">
+ <div class="main" data-act="oopen" data-id="${o.number}" style="cursor:pointer"><b>${esc(o.number)}</b> ${stTag(o.status)}<div class="sm muted">${esc(o.name)} · Legajo ${esc(o.legajo)} · ${fecha(o.created_at)}</div></div>
+ <div class="r"><div>${both(o.total,o.total_usd)}</div><div class="sm muted">${o.items.reduce((a,i)=>a+i.qty,0)} u.</div></div>
+ ${d?`<div class="det"><div class="muted">DNI ${esc(o.dni)} · ${esc(o.email)} · Tel ${esc(o.phone)}${o.terms_version?` · TyC v${o.terms_version}`:''}</div><div style="margin:10px 0">${o.items.map(i=>`<div>${esc(i.sku)} — ${esc(i.name)} × <b>${i.qty}</b> <span class="muted">(${money(i.price,i.currency)})</span></div>`).join('')}</div>
+ <div style="display:flex;gap:8px;flex-wrap:wrap">${['nuevo','exportado','cancelado'].filter(s=>s!==o.status).map(s=>`<button class="btn ghost s" data-act="setst" data-id="${o.number}" data-s="${s}">Marcar ${s}</button>`).join('')}</div></div>`:''}</div>`}).join('')||'<div class="panel center muted">No hay pedidos con este filtro.</div>'}</div>
+ ${ks.length?`<div class="actbar"><b>${ks.length}</b><span class="muted">seleccionados</span><button class="btn acc" data-act="exportsel">Excel SAP</button><button class="btn ghost" data-act="cancelsel">Cancelar pedidos</button></div>`:''}`}
+
+function productosHTML(){const q=A.pq.toLowerCase();const l=A.products.filter(p=>!q||(p.name+p.sku+(p.category||'')).toLowerCase().includes(q));
+ return `<div class="toolbar"><input id="pq" type="search" placeholder="Buscar producto" value="${esc(A.pq)}" style="flex:1;min-width:180px"><button class="btn acc s" data-act="pnew">+ Nuevo</button><button class="btn ghost s" data-act="pickx">Importar Excel</button><button class="btn ghost s" data-act="plantilla">Plantilla</button></div>
+ ${A.err?`<div class="note bad">${esc(A.err)}</div>`:''}
+ <div class="list">${l.map(p=>`<div class="pitem ${p.active?'':'off'}"><div class="thumb">${p.image?`<img src="${esc(imgUrl(p.image,true))}" alt="" loading="lazy">`:''}</div>
+ <div class="main"><div style="font-weight:500">${esc(p.name)}</div><div class="sm muted">${esc(p.sku)} · ${esc(p.category||'Sin categoría')}</div><div>${money(p.price,p.currency)} ${p.featured?'<span class="tag new">Destacado</span>':''}${p.active?'':' <span class="tag">Oculto</span>'}</div></div>
+ <div class="acts2" style="display:flex;gap:10px;align-items:center">${sw('pactive',p.active,p.sku)}<button class="btn ghost s" data-act="pedit" data-id="${esc(p.sku)}">Editar</button></div></div>`).join('')||'<div class="panel center muted">Todavía no hay productos. Importá tu Excel o creá uno nuevo.</div>'}</div>
+ <p class="sm muted mt">${A.products.length} productos · El interruptor muestra u oculta el producto en la tienda.</p>`}
+function editHTML(){const e=A.edit;const cats=[...new Set(A.products.map(p=>p.category).filter(Boolean))];
+ return `<div class="ov" data-act="closeedit"><div class="sheet"><div class="hdr"><h3>${A.isNew?'Nuevo producto':'Editar producto'}</h3><button class="ico" data-act="closeedit">✕</button></div><div class="bd">
+ <div class="fld"><label class="l">Foto</label><div class="uprow"><div class="thumb" style="width:110px;height:82px">${e.image?`<img src="${esc(imgUrl(e.image,true))}" alt="">`:''}</div><div style="display:flex;flex-direction:column;gap:8px"><button class="btn ghost s" data-act="pphoto">${e.image?'Cambiar foto':'Subir foto'}</button>${e.image?'<button class="btn ghost s" data-act="pphotodel">Quitar</button>':''}</div></div>${A.busy?'<div class="sm muted mt">Subiendo…</div>':''}</div>
+ <div class="two"><div class="fld"><label class="l">Código de material (SAP)</label><input type="text" data-f="sku" value="${esc(e.sku)}" ${A.isNew?'':'readonly'}></div>
+ <div class="fld"><label class="l">Categoría</label><input type="text" data-f="category" list="cats" value="${esc(e.category)}"><datalist id="cats">${cats.map(c=>`<option value="${esc(c)}">`).join('')}</datalist></div></div>
+ <div class="fld"><label class="l">Nombre</label><input type="text" data-f="name" value="${esc(e.name)}"></div>
+ <div class="fld"><label class="l">Descripción <span id="cc" class="muted">(${(e.description||'').length}/400)</span></label><textarea data-f="description" maxlength="400" rows="4">${esc(e.description)}</textarea></div>
+ <div class="two"><div class="fld"><label class="l">Precio</label><input type="number" inputmode="decimal" step="any" data-f="price" value="${esc(e.price)}"></div>
+ <div class="fld"><label class="l">Moneda</label><select data-f="currency"><option value="ARS" ${e.currency!=='USD'?'selected':''}>Pesos ($)</option><option value="USD" ${e.currency==='USD'?'selected':''}>Dólares (US$)</option></select></div></div>
+ <div class="setrow" style="padding-top:4px"><div class="grow">Visible en la tienda</div>${sw('eactive',e.active)}</div>
+ <div class="setrow"><div class="grow">Destacado <span class="sm muted">(aparece primero)</span></div>${sw('efeat',e.featured)}</div>
+ ${A.err?`<div class="err mt">${esc(A.err)}</div>`:''}</div>
+ <div class="ft">${A.isNew?'':`<button class="btn danger" data-act="pdel" style="margin-right:auto">${A.delArm?'¿Confirmar?':'Eliminar'}</button>`}<button class="btn ghost" data-act="closeedit">Cancelar</button><button class="btn acc" data-act="psave" ${A.busy?'disabled':''}>Guardar</button></div></div></div>`}
+
+function upBlock(key,label,hint,cls){const v=A.set[key];return `<div class="fld"><label class="l">${label}</label><div class="uprow">${v?`<div class="${cls}" ${cls==='herop'?`style="background-image:url('${esc(imgUrl(v))}')"`:''}>${cls==='logop'?`<img src="${esc(imgUrl(v))}" alt="">`:''}</div>`:`<div class="muted sm">${hint}</div>`}
+ <div style="display:flex;gap:8px"><button class="btn ghost s" data-act="upset" data-id="${key}">${v?'Cambiar':'Subir imagen'}</button>${v?`<button class="btn ghost s" data-act="delset" data-id="${key}">Quitar</button>`:''}</div></div></div>`}
+function contenidoHTML(){const s=A.set;if(!s)return '<div class="sk"></div>';
+ return `<div class="panel"><h3 class="sec">Portada de la tienda</h3><div class="two"><div class="fld"><label class="l">Título</label><input type="text" data-s="hero_title" value="${esc(s.hero_title)}"></div><div class="fld"><label class="l">Texto superior</label><input type="text" data-s="hero_subtitle" value="${esc(s.hero_subtitle)}"></div></div>
+ ${upBlock('hero_image','Imagen de portada','Sin imagen: se muestra el fondo oscuro de la marca. Recomendado: horizontal, mínimo 1600 px de ancho.','herop')}
+ ${upBlock('logo','Logo','Sin logo: se muestra el nombre en texto. Recomendado: PNG con fondo transparente, color claro.','logop')}</div>
+ <div class="panel"><h3 class="sec">Aviso destacado</h3><div class="fld"><label class="l">Mensaje en una franja arriba de la tienda (vacío = sin aviso)</label><input type="text" data-s="banner" maxlength="300" value="${esc(s.banner)}" placeholder="Ej: Pedidos abiertos hasta el 30/10"></div></div>
+ <div class="panel"><h3 class="sec">Términos y condiciones · versión ${s.terms_version}</h3><div class="fld"><textarea data-s="terms" rows="14">${esc(s.terms)}</textarea></div><div class="muted sm">Cada pedido guarda la versión de los términos que el empleado aceptó. Si cambiás el texto, la versión sube sola.</div></div>
+ <div class="acts" style="margin-bottom:24px"><a class="btn ghost" href="/" target="_blank" rel="noopener">Ver la tienda</a><button class="btn acc" data-act="savecontent" ${A.busy?'disabled':''}>Guardar cambios</button></div>`}
+function ajustesHTML(){const s=A.set;if(!s)return '<div class="sk"></div>';
+ return `<div class="panel"><h3 class="sec">Estado de la tienda</h3><div class="setrow" style="padding-top:0"><div class="grow"><b>${s.store_open?'Abierta':'Cerrada'}</b><div class="muted sm">Si la cerrás, los empleados pueden mirar pero no pedir.</div></div>${sw('storeopen',s.store_open)}</div>
+ <div class="fld mt"><label class="l">Mensaje cuando está cerrada</label><input type="text" data-s="closed_msg" value="${esc(s.closed_msg)}"></div><button class="btn ghost s" data-act="saveclosed">Guardar mensaje</button></div>
+ <div class="panel"><h3 class="sec">Clave de acceso de los empleados</h3><div class="note">Al cambiarla se cierran todas las sesiones abiertas. Compartí la nueva por mail interno.</div><div class="fld"><input type="text" data-s="access_code" value="${esc(s.access_code)}" autocomplete="off"></div>${A.err?`<div class="err" style="margin-bottom:10px">${esc(A.err)}</div>`:''}<button class="btn acc" data-act="savecode">Guardar clave</button></div>
+ <div class="panel"><h3 class="sec">Herramientas</h3><div style="display:flex;gap:10px;flex-wrap:wrap"><button class="btn ghost" data-act="backup">Respaldo de todos los pedidos</button><button class="btn ghost" data-act="plantilla">Plantilla de productos</button><button class="btn ghost" data-act="logout">Cerrar sesión</button></div></div>`}
+
+function render(){
+ if(A.auth===null){$('#app').innerHTML='<div class="wrap" style="padding-top:90px"><div class="sk"></div></div>';return}
+ if(!A.auth){$('#app').innerHTML=`<div class="login"><span class="wm"><b>Prestige</b> · Gestión</span><div class="panel"><h3 class="sec">Acceso administrador</h3><div class="fld"><label class="l">Contraseña</label><input id="pw" type="password" autocomplete="current-password"></div>${A.lmsg?`<div class="err">${esc(A.lmsg)}</div>`:''}<div class="acts"><span></span><button class="btn acc" data-act="login">Ingresar</button></div></div></div>`;return}
+ const v=A.tab==='resumen'?resumenHTML():A.tab==='pedidos'?pedidosHTML():A.tab==='productos'?productosHTML():A.tab==='contenido'?contenidoHTML():ajustesHTML();
+ $('#app').innerHTML=`<header class="top"><div class="wrap hd"><span class="wm"><b>Prestige</b> · Gestión</span><div class="sp"></div><a class="ico vt" href="/" target="_blank" rel="noopener">Ver tienda</a><button class="ico" data-act="theme">◐</button><button class="ico hm" data-act="logout">Salir</button></div></header>
+ <main class="wrap admin-main"><div class="tabs">${TABS.map(([k,t])=>`<button class="${A.tab===k?'on':''}" data-act="tab" data-id="${k}">${t}</button>`).join('')}</div>${A.tab==='resumen'?'<div class="mt"></div>':''}${v}</main>
+ <nav class="bnav">${TABS.map(([k,t])=>`<button class="${A.tab===k?'on':''}" data-act="tab" data-id="${k}"><svg viewBox="0 0 24 24" stroke-linecap="round" stroke-linejoin="round">${ICON[k]}</svg>${t}</button>`).join('')}</nav>${A.edit?editHTML():''}`}
+
+/* ---------- datos ---------- */
+const loadStats=async()=>{const r=await api('/api/admin/stats');if(r.ok){A.stats=r.d;A.auth=true}render()};
+const loadOrders=async()=>{const r=await api('/api/admin/orders?status='+A.of);if(r.ok){A.orders=r.d.orders;A.auth=true}else if(A.auth===null)A.auth=false;render()};
+const loadProducts=async()=>{const r=await api('/api/admin/products');if(r.ok){A.products=r.d.products;A.auth=true}render()};
+const loadSet=async()=>{const r=await api('/api/admin/settings');if(r.ok){A.set=r.d}render()};
+async function setTab(t){A.tab=t;A.err='';A.sel={};window.scrollTo(0,0);render();if(t==='resumen')loadStats();if(t==='pedidos')loadOrders();if(t==='productos')loadProducts();if(t==='contenido'||t==='ajustes')loadSet()}
+const draft=()=>({...A.edit});
+const selNums=()=>Object.keys(A.sel).filter(k=>A.sel[k]);
+
+document.addEventListener('click',async e=>{const t=e.target.closest('[data-act]');if(!t||t.type==='checkbox'||t.tagName==='SELECT'||t.tagName==='A')return;
+ if(t.classList.contains('ov')&&e.target!==t)return;
+ const a=t.dataset.act,id=t.dataset.id;
+ if(a==='login'){const r=await post('/api/admin/login',{password:$('#pw').value});if(r.ok){A.lmsg='';A.auth=true;await setTab('resumen')}else{A.lmsg=r.d.error||'Error';render()}}
+ else if(a==='logout'){await api('/api/logout',{method:'POST'});A.auth=false;render()}
+ else if(a==='theme'){const n=document.documentElement.dataset.theme==='dark'?'light':'dark';document.documentElement.dataset.theme=n;try{localStorage.setItem('pa_theme',n)}catch(x){}}
+ else if(a==='tab')setTab(id);
+ else if(a==='exportnew'){const r=await api('/api/admin/orders?status=nuevo');if(r.ok&&r.d.orders.length){const n=await exportSAP(r.d.orders);toast(n+' pedidos exportados');loadStats()}}
+ else if(a==='of'){A.of=id;A.sel={};loadOrders()}
+ else if(a==='selall'){const l=ordersFiltered();const all=l.length&&l.every(o=>A.sel[o.number]);A.sel={};if(!all)l.forEach(o=>A.sel[o.number]=true);render()}
+ else if(a==='oopen'){A.open=A.open===id?null:id;render()}
+ else if(a==='setst'){await post('/api/admin/status',{numbers:[id],status:t.dataset.s});toast('Estado actualizado');loadOrders()}
+ else if(a==='exportsel'){const os=A.orders.filter(o=>A.sel[o.number]);if(os.length){const n=await exportSAP(os);A.sel={};toast('Excel generado');loadOrders()}}
+ else if(a==='cancelsel'){const n=selNums();if(n.length&&confirm('¿Marcar '+n.length+' pedido(s) como cancelados?')){await post('/api/admin/status',{numbers:n,status:'cancelado'});A.sel={};loadOrders()}}
+ else if(a==='pnew'){A.edit={sku:'',name:'',category:'',description:'',price:'',currency:'ARS',image:'',active:true,featured:false};A.isNew=true;A.err='';A.delArm=false;render()}
+ else if(a==='pedit'){A.edit={...A.products.find(p=>p.sku===id)};A.isNew=false;A.err='';A.delArm=false;render()}
+ else if(a==='closeedit'){A.edit=null;A.err='';render()}
+ else if(a==='pphoto')pickImage(1000,async img=>{A.edit.image=img});
+ else if(a==='pphotodel'){A.edit.image='';render()}
+ else if(a==='psave'){const p=draft(),price=Number(p.price);
+  if(!String(p.sku).trim()||!String(p.name).trim()||p.price===''||!(price>=0)){A.err='Completá código, nombre y precio.';return render()}
+  if(A.isNew&&A.products.some(x=>x.sku===String(p.sku).trim())){A.err='Ya existe un producto con ese código.';return render()}
+  const r=await post('/api/admin/product',{...p,price});if(r.ok){A.edit=null;A.err='';toast('Producto guardado');loadProducts()}else{A.err=r.d.error||'No se pudo guardar';render()}}
+ else if(a==='pdel'){if(!A.delArm){A.delArm=true;return render()}const r=await api('/api/admin/products?sku='+encodeURIComponent(A.edit.sku),{method:'DELETE'});A.edit=null;toast(r.ok?'Producto eliminado':'No se pudo eliminar');loadProducts()}
  else if(a==='pickx')$('#fx').click();
- else if(a==='pdel'){if(S.del===id){S.del=null;const r=await api('/api/admin/products?sku='+encodeURIComponent(id),{method:'DELETE'});toast(r.ok?'Producto eliminado':'No se pudo eliminar');loadProducts()}else{S.del=id;render()}}
- else if(a==='savecode'){const code=$('#acode').value.trim();const r=await api('/api/admin/settings',{method:'POST',body:JSON.stringify({access_code:code})});S.err=r.ok?'':(r.d.error||'Error');S.msg=r.ok?'Clave actualizada. Compartí la nueva con los empleados.':'';if(r.ok)S.code=code;render()}
+ else if(a==='plantilla')plantilla();
+ else if(a==='backup')exportBackup();
+ else if(a==='upset')pickImage(id==='logo'?600:1600,async img=>{A.set[id]=img});
+ else if(a==='delset'){A.set[id]='';render()}
+ else if(a==='savecontent'){const s=A.set;A.busy=true;render();const r=await post('/api/admin/settings',{values:{terms:s.terms,hero_title:s.hero_title,hero_subtitle:s.hero_subtitle,hero_image:s.hero_image,logo:s.logo,banner:s.banner}});A.busy=false;toast(r.ok?'Cambios guardados':'No se pudo guardar');await loadSet()}
+ else if(a==='saveclosed'){const r=await post('/api/admin/settings',{values:{closed_msg:A.set.closed_msg}});toast(r.ok?'Mensaje guardado':'No se pudo guardar')}
+ else if(a==='savecode'){A.err='';const r=await post('/api/admin/settings',{values:{access_code:A.set.access_code}});if(r.ok)toast('Clave actualizada. Compartí la nueva con los empleados.');else A.err=r.d.error||'Error';await loadSet()}
 });
-document.addEventListener('input',e=>{if(e.target.id==='pq'){S.q=e.target.value;const pos=e.target.selectionStart;render();const i=$('#pq');i.focus();i.setSelectionRange(pos,pos)}});
-document.addEventListener('keydown',e=>{if(e.key==='Enter'&&e.target.id==='pw')document.querySelector('[data-act=login]').click()});
+document.addEventListener('input',e=>{const t=e.target;
+ if(t.id==='oq'){A.oq=t.value;const p=t.selectionStart;render();const i=$('#oq');i.focus();i.setSelectionRange(p,p);return}
+ if(t.id==='pq'){A.pq=t.value;const p=t.selectionStart;render();const i=$('#pq');i.focus();i.setSelectionRange(p,p);return}
+ if(t.dataset.f&&A.edit){A.edit[t.dataset.f]=t.value;if(t.dataset.f==='description'){const c=$('#cc');if(c)c.textContent='('+t.value.length+'/400)'}}
+ if(t.dataset.s&&A.set)A.set[t.dataset.s]=t.value});
 document.addEventListener('change',async e=>{const t=e.target,a=t.dataset.act;
- if(a==='osel'){S.sel[t.dataset.id]=t.checked;render()}
- else if(a==='status'){await setStatus([t.dataset.id],t.value);loadOrders()}
- else if(a==='filter'){S.filter=t.value;S.sel={};loadOrders()}
- else if(t.id==='fx'&&t.files[0]){S.err='';S.msg='';try{const buf=await t.files[0].arrayBuffer();const wb=XLSX.read(buf,{type:'array'});const json=XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]],{defval:'',raw:true});
-  const rows=parseRows(json);if(!rows.length){S.err='El archivo no tiene productos.';render();return}
-  const r=await api('/api/admin/products',{method:'POST',body:JSON.stringify({rows})});if(r.ok){S.msg=`${r.d.count} productos cargados.`;await loadProducts()}else{S.err=r.d.error||'No se pudo importar';render()}}catch(x){S.err='No se pudo leer el archivo.';render()}t.value=''}});
-loadOrders();
+ if(t.dataset.f==='currency'&&A.edit)A.edit.currency=t.value;
+ if(a==='osel'){A.sel[t.dataset.id]=t.checked;render()}
+ else if(a==='pactive'){await post('/api/admin/product-flag',{sku:t.dataset.id,active:t.checked});const p=A.products.find(x=>x.sku===t.dataset.id);if(p)p.active=t.checked;render()}
+ else if(a==='eactive')A.edit.active=t.checked;
+ else if(a==='efeat')A.edit.featured=t.checked;
+ else if(a==='storeopen'){const r=await post('/api/admin/settings',{values:{store_open:t.checked}});if(r.ok){A.set.store_open=t.checked;toast(t.checked?'Tienda abierta':'Tienda cerrada')}render()}
+ else if(t.id==='fx'&&t.files[0]){await importExcel(t.files[0]);t.value=''}
+ else if(t.id==='fimg'&&t.files[0]&&pickCb){const f=t.files[0],cb=pickCb;t.value='';A.busy=true;render();try{await cb.cb(await uploadImage(f,cb.max))}catch(x){A.err='No se pudo subir la imagen.';toast('No se pudo subir la imagen')}A.busy=false;render()}});
+document.addEventListener('keydown',e=>{if(e.key==='Enter'&&e.target.id==='pw')document.querySelector('[data-act=login]').click()});
+render();loadStats();
 </script></body></html>

@@ -14,8 +14,18 @@ export async function getSetting(key, ttl = 30000) {
 }
 export async function setSetting(key, value) {
   await db().sql`INSERT INTO settings (key, value) VALUES (${key}, ${String(value)}) ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value`;
-  cache.delete(key);
+  cache.delete(key); allCache = null;
 }
+let allCache = null;
+export async function getAllSettings(ttl = 20000) {
+  if (allCache && Date.now() - allCache.t < ttl) return allCache.v;
+  const rows = await db().sql`SELECT key, value FROM settings`;
+  const v = Object.fromEntries(rows.map((r) => [r.key, r.value]));
+  allCache = { t: Date.now(), v };
+  return v;
+}
+export const dropSettingsCache = () => { cache.clear(); allCache = null; };
+
 export async function tooMany(ip, kind) {
   const rows = await db().sql`SELECT COUNT(*)::int AS c FROM intentos WHERE ip = ${ip} AND kind = ${kind} AND ts > ${Date.now() - 15 * 60 * 1000}`;
   return rows[0].c >= (kind === 'a' ? 8 : 600);

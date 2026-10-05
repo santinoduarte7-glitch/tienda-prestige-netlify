@@ -1,73 +1,113 @@
 <!DOCTYPE html>
 <html lang="es" data-theme="dark"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#08090a">
 <title>Prestige Auto · Tienda corporativa</title>
 <link rel="stylesheet" href="/styles.css">
 <script>try{var t=localStorage.getItem('pa_theme');if(t)document.documentElement.setAttribute('data-theme',t)}catch(e){}</script>
 </head><body>
 <div id="app"></div><div id="toast"></div>
-<script src="/config.js"></script>
 <script>
 const $=s=>document.querySelector(s);
 const esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
-const money=n=>new Intl.NumberFormat('es-AR',{style:'currency',currency:'ARS',maximumFractionDigits:0}).format(n||0);
 const ls=(k,d)=>{try{const v=localStorage.getItem(k);return v?JSON.parse(v):d}catch(e){return d}};
 const lsSet=(k,v)=>{try{localStorage.setItem(k,JSON.stringify(v))}catch(e){}};
-const imgSrc=u=>!u?'':/^(https?:)?\/\//.test(u)||u.startsWith('/')?u:'/img/'+u;
-const S={view:'shop',auth:null,logo:false,products:[],cart:ls('pa_cart',{}),form:ls('pa_form',{name:'',legajo:'',dni:'',email:'',tel:''}),cat:'Todos',q:'',step:1,acc:{},errors:{},last:null,busy:false,lmsg:''};
-const cartRows=()=>Object.entries(S.cart).map(([sku,q])=>({p:S.products.find(p=>p.sku===sku),q})).filter(x=>x.p&&x.q>0);
-const count=()=>cartRows().reduce((a,x)=>a+x.q,0),total=()=>cartRows().reduce((a,x)=>a+x.q*x.p.price,0);
+const nf0=new Intl.NumberFormat('es-AR',{maximumFractionDigits:0}),nf2=new Intl.NumberFormat('es-AR',{maximumFractionDigits:2});
+const nfd=new Intl.NumberFormat('es-AR',{minimumFractionDigits:2,maximumFractionDigits:2});
+const fmt=n=>Number.isInteger(n||0)?nf0.format(n||0):nfd.format(n);
+const money=(n,c)=>(c==='USD'?'US$ ':'$ ')+fmt(n||0);
+const totalsText=t=>[t.ARS?money(t.ARS,'ARS'):'',t.USD?money(t.USD,'USD'):''].filter(Boolean).join(' + ')||money(0,'ARS');
+// 'img:ID' = foto subida desde el panel (ID+'t' = miniatura). Un nombre suelto = archivo de /img. Un link se usa tal cual.
+const imgUrl=(u,thumb)=>!u?'':u.startsWith('img:')?'/api/img/'+u.slice(4)+(thumb?'t':''):/^(https?:)?\/\//.test(u)||u.startsWith('/')||u.startsWith('data:')?u:'/img/'+u;
+const seen=new Set();
+const S={view:'shop',auth:null,logo:'',config:{},products:[],cart:ls('pa_cart',{}),form:ls('pa_form',{name:'',legajo:'',dni:'',email:'',tel:''}),cat:'Todos',q:'',step:1,acc:{},errors:{},last:null,busy:false,modal:null,lmsg:''};
+const rows=()=>Object.entries(S.cart).map(([sku,q])=>({p:S.products.find(p=>p.sku===sku),q})).filter(x=>x.p&&x.q>0);
+const count=()=>rows().reduce((a,x)=>a+x.q,0);
+const totals=()=>{const t={ARS:0,USD:0};rows().forEach(({p,q})=>t[p.currency==='USD'?'USD':'ARS']+=p.price*q);return t};
 const saveCart=()=>lsSet('pa_cart',S.cart);
+const open=()=>S.config.store_open!==false;
 function toast(m){$('#toast').innerHTML='<div class="toast">'+esc(m)+'</div>';setTimeout(()=>$('#toast').innerHTML='',2800)}
-const logoHTML=()=>S.logo?'<img src="/logo.png" alt="Prestige">':'<span class="wm"><b>Prestige</b> Auto</span>';
 async function api(path,opt){const r=await fetch(path,{credentials:'same-origin',...opt,headers:{'Content-Type':'application/json'}});let d={};try{d=await r.json()}catch(e){}return {ok:r.ok,status:r.status,d}}
-function stepper(p){const q=S.cart[p.sku]||0;return q?`<div class="step"><button data-act="dec" data-id="${esc(p.sku)}">−</button><span>${q}</span><button data-act="inc" data-id="${esc(p.sku)}">+</button></div>`:`<button class="btn" data-act="inc" data-id="${esc(p.sku)}">Agregar al carrito</button>`}
-function gridHTML(){const q=S.q.toLowerCase();const l=S.products.filter(p=>(S.cat==='Todos'||p.category===S.cat)&&(!q||(p.name+' '+p.sku+' '+(p.description||'')).toLowerCase().includes(q)));
- if(!l.length)return '<div class="empty">No hay productos para mostrar.</div>';
- return l.map(p=>`<article class="card"><div class="img">${p.image?`<img src="${esc(imgSrc(p.image))}" alt="" loading="lazy">`:'PA'}</div><div class="cb"><div class="sku">${esc(p.sku)} · ${esc(p.category||'')}</div><div class="nm">${esc(p.name)}</div><div class="ds">${esc(p.description||'')}</div><div class="pr">${money(p.price)}</div>${stepper(p)}</div></article>`).join('')}
-const header=()=>`<header><div class="wrap hd"><div class="brand" data-act="go" data-v="shop">${logoHTML()}</div><div class="sp"></div><button class="ico" data-act="theme">◐</button><button class="ico" data-act="logout">Salir</button><button class="cartb" data-act="go" data-v="cart">Carrito <span class="badge">${count()}</span></button></div></header>`;
-const loginHTML=()=>`<div class="login">${S.logo?'<div style="text-align:center;margin-bottom:24px"><img src="/logo.png" style="height:40px" alt=""></div>':'<span class="wm"><b>Prestige</b> Auto</span>'}<div class="panel"><h3>Acceso para empleados</h3><div class="note">Ingresá la clave de acceso que te compartieron por mail interno.</div><div class="fld"><label>Clave de acceso</label><input id="code" type="password" autocomplete="current-password"></div>${S.lmsg?`<div class="err">${esc(S.lmsg)}</div>`:''}<div class="acts"><span></span><button class="btn" data-act="login">Ingresar</button></div></div></div>`;
-function shopHTML(){const cats=['Todos',...new Set(S.products.map(p=>p.category).filter(Boolean))];
- return `<section class="hero"><small>Acción comercial · Exclusivo empleados</small><h1>Tienda corporativa</h1><div class="ln"></div></section><div class="bar"><div class="chips">${cats.map(c=>`<button class="chip ${c===S.cat?'on':''}" data-act="cat" data-id="${esc(c)}">${esc(c)}</button>`).join('')}</div><input id="q" type="search" placeholder="Buscar producto o código" value="${esc(S.q)}"></div><div id="grid" class="grid">${gridHTML()}</div>`}
-function cartHTML(){const it=cartRows();if(!it.length)return `<h2>Tu carrito</h2><div class="panel empty">El carrito está vacío.<br><br><button class="btn" data-act="go" data-v="shop">Ir a la tienda</button></div>`;
- return `<h2>Tu carrito</h2><div class="panel">${it.map(({p,q})=>`<div class="row"><div class="thumb">${p.image?`<img src="${esc(imgSrc(p.image))}" alt="">`:''}</div><div class="grow"><div class="nm">${esc(p.name)}</div><div class="sku">${esc(p.sku)} · ${money(p.price)} c/u</div></div>${stepper(p)}<div style="width:110px;text-align:right">${money(q*p.price)}</div><button class="ico" data-act="rm" data-id="${esc(p.sku)}">✕</button></div>`).join('')}<div class="tot"><span>Total</span><span>${money(total())}</span></div><div class="acts"><button class="btn ghost" data-act="go" data-v="shop">Seguir comprando</button><button class="btn" data-act="checkout">Continuar</button></div></div>`}
-const fld=(k,l,t,ph)=>`<div class="fld"><label>${l} <i>*</i></label><input type="${t}" data-f="${k}" placeholder="${ph}" ${t==='text'&&k!=='name'?'inputmode="numeric"':''} value="${esc(S.form[k]||'')}">${S.errors[k]?`<div class="err">${S.errors[k]}</div>`:''}</div>`;
-function checkoutHTML(){const it=cartRows();const st=`<div class="steps"><span class="${S.step===1?'on':''}">1 · Datos</span><span class="${S.step===2?'on':''}">2 · Términos y condiciones</span></div>`;
- if(S.step===1)return `<h2>Datos del pedido</h2>${st}<div class="panel"><div class="two">${fld('name','Nombre y Apellido','text','Escriba su respuesta')}${fld('legajo','Número de Legajo','text','El valor debe ser un número')}${fld('dni','DNI','text','El valor debe ser un número')}${fld('email','Correo electrónico','email','Escriba su respuesta')}${fld('tel','Teléfono de contacto','text','El valor debe ser un número')}</div><div class="acts"><button class="btn ghost" data-act="go" data-v="cart">Volver al carrito</button><button class="btn" data-act="next">Siguiente</button></div></div>`;
+const logoHTML=()=>S.logo?`<img src="${esc(imgUrl(S.logo))}" alt="Prestige Auto">`:'<span class="wm"><b>Prestige</b> Auto</span>';
+
+function phHTML(p,i){const u=imgUrl(p.image,true);
+ if(!u)return '<span>PA</span>';
+ return `<img src="${esc(u)}" alt="${esc(p.name)}" width="480" height="360" class="${seen.has(u)?'ok':''}" ${i<4?'fetchpriority="high"':'loading="lazy"'} decoding="async" onload="seen.add(this.getAttribute('src'));this.classList.add('ok');this.parentNode.classList.add('loaded')" onerror="this.remove();this.parentNode&&this.parentNode.classList.add('none')">`}
+function stepper(p){const q=S.cart[p.sku]||0;
+ if(!open())return '<button class="btn block" disabled>Tienda cerrada</button>';
+ return q?`<div class="step"><button data-act="dec" data-id="${esc(p.sku)}" aria-label="Menos">−</button><span>${q}</span><button data-act="inc" data-id="${esc(p.sku)}" aria-label="Más">+</button></div>`:`<button class="btn block" data-act="inc" data-id="${esc(p.sku)}">Agregar</button>`}
+function gridHTML(){const q=S.q.toLowerCase();
+ const l=S.products.filter(p=>(S.cat==='Todos'||p.category===S.cat)&&(!q||(p.name+' '+p.sku+' '+(p.description||'')+' '+(p.category||'')).toLowerCase().includes(q)));
+ if(!l.length)return '<div class="empty">No encontramos productos con ese filtro.</div>';
+ return l.map((p,i)=>`<article class="card"><div class="img ${!p.image?'none':seen.has(imgUrl(p.image,true))?'loaded':''}" data-act="open" data-id="${esc(p.sku)}">${p.featured?'<span class="tagf">Destacado</span>':''}${phHTML(p,i)}</div>
+ <div class="cb"><div class="sku">${esc(p.category||'')}</div><div class="nm" data-act="open" data-id="${esc(p.sku)}" style="cursor:pointer">${esc(p.name)}</div><div class="ds">${esc(p.description||'')}</div><div class="pr">${money(p.price,p.currency)}</div>${stepper(p)}</div></article>`).join('')}
+function header(){return `<header class="top"><div class="wrap hd"><div class="brand" data-act="go" data-v="shop">${logoHTML()}</div><div class="sp"></div>
+ <button class="ico" data-act="theme" aria-label="Tema">◐</button><button class="ico hm" data-act="logout">Salir</button>
+ <button class="cartb" data-act="go" data-v="cart"><span class="t">Carrito</span><span aria-hidden="true">🛒</span><span class="badge">${count()}</span></button></div></header>`}
+function strips(){return (S.config.banner?`<div class="announce">${esc(S.config.banner)}</div>`:'')+(open()?'':`<div class="closed">${esc(S.config.closed_msg||'La tienda está cerrada.')}</div>`)}
+function shopHTML(){const cats=['Todos',...new Set(S.products.map(p=>p.category).filter(Boolean))];const c=S.config;
+ const hero=c.hero_image?`style="background-image:url('${esc(imgUrl(c.hero_image))}')"`:'';
+ return `<section class="hero ${c.hero_image?'':'noimg'}" ${hero}><div class="wrap in"><small>${esc(c.hero_subtitle||'')}</small><h1>${esc(c.hero_title||'Tienda corporativa')}</h1><div class="ln"></div></div></section>
+ <div class="wrap"><div class="bar"><div class="chips">${cats.map(x=>`<button class="chip ${x===S.cat?'on':''}" data-act="cat" data-id="${esc(x)}">${esc(x)}</button>`).join('')}</div>
+ <input id="q" type="search" placeholder="Buscar producto" value="${esc(S.q)}"></div><div id="grid" class="grid">${S.products.length||S.loaded?gridHTML():'<div class="sk"></div><div class="sk"></div><div class="sk"></div><div class="sk"></div>'}</div></div>`}
+function cartHTML(){const it=rows();if(!it.length)return `<div class="wrap"><h2>Tu carrito</h2><div class="panel center muted">El carrito está vacío.<br><br><button class="btn" data-act="go" data-v="shop">Ir a la tienda</button></div></div>`;
+ return `<div class="wrap"><h2>Tu carrito</h2><div class="panel">${it.map(({p,q})=>`<div class="row"><div class="thumb">${p.image?`<img src="${esc(imgUrl(p.image,true))}" alt="" loading="lazy">`:''}</div><div class="grow"><div class="nm">${esc(p.name)}</div><div class="sku">${money(p.price,p.currency)} c/u</div></div>
+ <div style="display:flex;flex-direction:column;align-items:flex-end;gap:6px"><div class="step"><button data-act="dec" data-id="${esc(p.sku)}">−</button><span>${q}</span><button data-act="inc" data-id="${esc(p.sku)}">+</button></div><b style="font-weight:500">${money(q*p.price,p.currency)}</b></div>
+ <button class="ico" data-act="rm" data-id="${esc(p.sku)}" aria-label="Quitar">✕</button></div>`).join('')}
+ <div class="tot"><span>Total</span><span>${totalsText(totals())}</span></div>
+ <div class="acts"><button class="btn ghost" data-act="go" data-v="shop">Seguir comprando</button><button class="btn acc" data-act="checkout" ${open()?'':'disabled'}>Continuar</button></div></div></div>`}
+const fld=(k,l,t,ph)=>`<div class="fld"><label class="l">${l} *</label><input type="${t}" data-f="${k}" placeholder="${ph}" ${k!=='name'&&k!=='email'?'inputmode="numeric"':''} autocomplete="off" value="${esc(S.form[k]||'')}">${S.errors[k]?`<div class="err">${S.errors[k]}</div>`:''}</div>`;
+function checkoutHTML(){const it=rows();const st=`<div class="steps"><span class="${S.step===1?'on':''}">1 · Datos</span><span class="${S.step===2?'on':''}">2 · Términos</span></div>`;
+ if(S.step===1)return `<div class="wrap"><h2>Datos del pedido</h2>${st}<div class="panel"><div class="two">${fld('name','Nombre y Apellido','text','Escriba su respuesta')}${fld('legajo','Número de Legajo','text','El valor debe ser un número')}${fld('dni','DNI','text','El valor debe ser un número')}${fld('email','Correo electrónico','email','Escriba su respuesta')}${fld('tel','Teléfono de contacto','text','El valor debe ser un número')}</div><div class="acts"><button class="btn ghost" data-act="go" data-v="cart">Volver</button><button class="btn acc" data-act="next">Siguiente</button></div></div></div>`;
  const all=it.every(({p})=>S.acc[p.sku]);
- return `<h2>Términos y condiciones</h2>${st}<div class="panel"><div class="terms">${esc(CONFIG.terms)}</div><h3>Aceptación por producto</h3>${it.map(({p,q})=>`<label class="acc"><input type="checkbox" data-act="acc" data-id="${esc(p.sku)}" ${S.acc[p.sku]?'checked':''}><span><b>${esc(p.name)}</b> × ${q}<br><span class="sku">Acepto los términos y condiciones para este producto · ${money(p.price*q)}</span></span></label>`).join('')}${S.errors.acc?`<div class="err">${esc(S.errors.acc)}</div>`:''}<div class="tot"><span>Total</span><span>${money(total())}</span></div><div class="acts"><button class="btn ghost" data-act="back">Volver</button><span><button class="btn ghost" data-act="accall">${all?'Quitar todos':'Aceptar todos'}</button> <button class="btn" data-act="place" ${S.busy?'disabled':''}>${S.busy?'Enviando…':'Confirmar pedido'}</button></span></div></div>`}
-const doneHTML=()=>`<div class="panel" style="text-align:center;margin-top:40px"><div class="ok-big">✓</div><h2 style="margin-top:6px">Pedido recibido</h2><p>Número de pedido <b>${esc(S.last.number)}</b></p><p class="sku">${money(S.last.total)}</p><p class="sku">Guardá este número por cualquier consulta.</p><button class="btn" data-act="go" data-v="shop">Volver a la tienda</button></div>`;
+ return `<div class="wrap"><h2>Términos y condiciones</h2>${st}<div class="panel"><div class="terms">${esc(S.config.terms||'')}</div><h3 class="sec">Aceptación por producto</h3>
+ ${it.map(({p,q})=>`<label class="acc"><input type="checkbox" data-act="acc" data-id="${esc(p.sku)}" ${S.acc[p.sku]?'checked':''}><span><b>${esc(p.name)}</b> × ${q}<br><span class="sku">Acepto los términos y condiciones para este producto · ${money(p.price*q,p.currency)}</span></span></label>`).join('')}
+ ${S.errors.acc?`<div class="err">${esc(S.errors.acc)}</div>`:''}<div class="tot"><span>Total</span><span>${totalsText(totals())}</span></div>
+ <div class="acts"><button class="btn ghost" data-act="back">Volver</button><span style="display:flex;gap:8px;flex-wrap:wrap"><button class="btn ghost" data-act="accall">${all?'Quitar todos':'Aceptar todos'}</button><button class="btn acc" data-act="place" ${S.busy?'disabled':''}>${S.busy?'Enviando…':'Confirmar pedido'}</button></span></div></div></div>`}
+const doneHTML=()=>`<div class="wrap"><div class="panel center" style="margin-top:40px"><div class="ok-big">✓</div><h2 style="margin-top:6px">Pedido recibido</h2><p>Número de pedido <b>${esc(S.last.number)}</b></p><p class="muted">${totalsText({ARS:S.last.total_ars,USD:S.last.total_usd})}</p><p class="muted sm">Guardá este número por cualquier consulta.</p><button class="btn" data-act="go" data-v="shop">Volver a la tienda</button></div></div>`;
+function modalHTML(){const p=S.products.find(x=>x.sku===S.modal);if(!p)return '';
+ return `<div class="ov" data-act="closem"><div class="sheet" data-stop="1"><div class="hdr"><h3>${esc(p.name)}</h3><button class="ico" data-act="closem" aria-label="Cerrar">✕</button></div><div class="bd">
+ ${p.image?`<div class="pimg"><img src="${esc(imgUrl(p.image))}" alt="${esc(p.name)}"></div>`:''}<div class="sku">${esc(p.category||'')}</div>
+ <p style="margin:8px 0 14px;white-space:pre-wrap">${esc(p.description||'')}</p><div class="pr" style="font-size:24px">${money(p.price,p.currency)}</div><div class="mt">${stepper(p)}</div></div></div></div>`}
+function loginHTML(){return `<div class="login">${S.logo?`<div class="center" style="margin-bottom:26px"><img src="${esc(imgUrl(S.logo))}" style="height:42px;margin:0 auto" alt=""></div>`:'<span class="wm"><b>Prestige</b> Auto</span>'}
+ <div class="panel"><h3 class="sec">Acceso para empleados</h3><div class="note">Ingresá la clave de acceso que te compartieron por mail interno.</div><div class="fld"><label class="l">Clave de acceso</label><input id="code" type="password" autocomplete="current-password"></div>${S.lmsg?`<div class="err">${esc(S.lmsg)}</div>`:''}<div class="acts"><span></span><button class="btn acc" data-act="login">Ingresar</button></div></div></div>`}
 function render(){
- if(S.auth===null){$('#app').innerHTML='<div class="wrap" style="padding-top:90px"><div class="grid"><div class="sk"></div><div class="sk"></div><div class="sk"></div></div></div>';return}
+ if(S.auth===null){$('#app').innerHTML='<div class="wrap" style="padding-top:90px"><div class="grid"><div class="sk"></div><div class="sk"></div><div class="sk"></div><div class="sk"></div></div></div>';return}
  if(!S.auth){$('#app').innerHTML=loginHTML();return}
  const v=S.view==='shop'?shopHTML():S.view==='cart'?cartHTML():S.view==='checkout'?checkoutHTML():doneHTML();
- $('#app').innerHTML=`${header()}<main class="wrap">${v}</main><footer><div class="wrap">PRESTIGE AUTO · Tienda interna de acción comercial · Uso exclusivo de empleados</div></footer>`}
-const go=v=>{S.view=v;if(v==='checkout'){S.step=1;S.errors={};S.acc={}}scrollTo(0,0);render()};
+ const n=count(),bar=S.view==='shop'&&n>0?`<button class="cartbar" data-act="go" data-v="cart"><span class="badge">${n}</span><b>Ver carrito</b><span class="sp"></span><span>${totalsText(totals())}</span></button>`:'';
+ $('#app').innerHTML=`${header()}${strips()}<main>${v}</main><footer class="ft"><div class="wrap">PRESTIGE AUTO · Tienda interna de acción comercial · Uso exclusivo de empleados</div></footer>${bar}${S.modal?modalHTML():''}`}
+const go=v=>{S.view=v;S.modal=null;if(v==='checkout'){S.step=1;S.errors={};S.acc={}}scrollTo(0,0);render()};
 function validate(){const f=S.form,e={};if((f.name||'').trim().length<3)e.name='Ingresá tu nombre y apellido.';if(!/^\d+$/.test(f.legajo||''))e.legajo='El valor debe ser un número.';if(!/^\d{6,9}$/.test(f.dni||''))e.dni='Ingresá un DNI válido (solo números).';if(!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(f.email||''))e.email='Ingresá un correo válido.';if(!/^\d{6,15}$/.test(f.tel||''))e.tel='El valor debe ser un número.';S.errors=e;return !Object.keys(e).length}
-async function loadCatalog(){const r=await api('/api/catalog');if(r.status===401){S.auth=false;render();return}S.auth=true;S.products=r.d.products||[];
+async function load(){const r=await api('/api/catalog');
+ if(r.status===401){S.auth=false;const b=await api('/api/branding');S.logo=(b.d&&b.d.logo)||'';render();return}
+ S.auth=true;S.products=r.d.products||[];S.config=r.d.config||{};S.logo=S.config.logo||'';S.loaded=true;
  for(const k of Object.keys(S.cart)){if(!S.products.find(p=>p.sku===k))delete S.cart[k]}saveCart();render()}
-async function place(){const it=cartRows();if(!it.every(({p})=>S.acc[p.sku])){S.errors.acc='Tenés que aceptar los términos de todos los productos.';render();return}
+async function place(){const it=rows();if(!it.every(({p})=>S.acc[p.sku])){S.errors.acc='Tenés que aceptar los términos de todos los productos.';render();return}
  S.busy=true;render();const r=await api('/api/orders',{method:'POST',body:JSON.stringify({customer:S.form,items:it.map(({p,q})=>({sku:p.sku,qty:q,accepted:true}))})});S.busy=false;
- if(!r.ok){if(r.status===401){S.auth=false}else{S.errors.acc=r.d.error||'No se pudo enviar el pedido. Intentá de nuevo.'}render();return}
+ if(!r.ok){if(r.status===401)S.auth=false;else S.errors.acc=r.d.error||'No se pudo enviar el pedido. Intentá de nuevo.';render();return}
  lsSet('pa_form',S.form);S.last=r.d;S.cart={};S.acc={};saveCart();S.view='done';scrollTo(0,0);render()}
-document.addEventListener('click',async e=>{const t=e.target.closest('[data-act]');if(!t||t.type==='checkbox')return;const a=t.dataset.act,id=t.dataset.id;
+document.addEventListener('click',async e=>{const t=e.target.closest('[data-act]');if(!t||t.type==='checkbox')return;
+ if(t.classList.contains('ov')&&e.target!==t)return;
+ const a=t.dataset.act,id=t.dataset.id;
  if(a==='go')go(t.dataset.v);
+ else if(a==='open'){S.modal=id;render()}
+ else if(a==='closem'){S.modal=null;render()}
  else if(a==='theme'){const n=document.documentElement.dataset.theme==='dark'?'light':'dark';document.documentElement.dataset.theme=n;try{localStorage.setItem('pa_theme',n)}catch(x){}}
- else if(a==='login'){const code=$('#code').value;const r=await api('/api/login',{method:'POST',body:JSON.stringify({code})});if(r.ok){S.lmsg='';await loadCatalog()}else{S.lmsg=r.d.error||'No se pudo ingresar.';render()}}
+ else if(a==='login'){const r=await api('/api/login',{method:'POST',body:JSON.stringify({code:$('#code').value})});if(r.ok){S.lmsg='';await load()}else{S.lmsg=r.d.error||'No se pudo ingresar.';render()}}
  else if(a==='logout'){await api('/api/logout',{method:'POST'});S.auth=false;render()}
  else if(a==='cat'){S.cat=id;render()}
- else if(a==='inc'){S.cart[id]=(S.cart[id]||0)+1;saveCart();render()}
+ else if(a==='inc'){if(!open())return;S.cart[id]=(S.cart[id]||0)+1;saveCart();render()}
  else if(a==='dec'){S.cart[id]=Math.max(0,(S.cart[id]||0)-1);if(!S.cart[id])delete S.cart[id];saveCart();render()}
  else if(a==='rm'){delete S.cart[id];saveCart();render()}
  else if(a==='checkout')go('checkout');
  else if(a==='next'){if(validate()){S.step=2;scrollTo(0,0)}render()}
  else if(a==='back'){S.step=1;render()}
- else if(a==='accall'){const it=cartRows(),all=it.every(({p})=>S.acc[p.sku]);it.forEach(({p})=>S.acc[p.sku]=!all);S.errors.acc='';render()}
+ else if(a==='accall'){const it=rows(),all=it.every(({p})=>S.acc[p.sku]);it.forEach(({p})=>S.acc[p.sku]=!all);S.errors.acc='';render()}
  else if(a==='place')place();
 });
-document.addEventListener('keydown',e=>{if(e.key==='Enter'&&e.target.id==='code')document.querySelector('[data-act=login]').click()});
+document.addEventListener('keydown',e=>{if(e.key==='Enter'&&e.target.id==='code')document.querySelector('[data-act=login]').click();if(e.key==='Escape'&&S.modal){S.modal=null;render()}});
 document.addEventListener('input',e=>{const t=e.target;if(t.id==='q'){S.q=t.value;$('#grid').innerHTML=gridHTML();return}if(t.dataset.f)S.form[t.dataset.f]=t.value});
 document.addEventListener('change',e=>{const t=e.target;if(t.dataset.act==='acc'){S.acc[t.dataset.id]=t.checked;S.errors.acc='';render()}});
-const im=new Image();im.onload=()=>{S.logo=true;if(S.auth!==null)render()};im.src='/logo.png';
-render();loadCatalog();
+render();load();
 </script></body></html>
